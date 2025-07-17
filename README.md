@@ -17,7 +17,6 @@ The template provides a starting point for bringing your SageMaker Pipeline deve
 |   |-- _utils.py
 |   `-- __version__.py
 |-- README.md
-|-- sagemaker-pipelines-project.ipynb
 |-- setup.cfg
 |-- setup.py
 |-- tests
@@ -32,7 +31,7 @@ In this example, we are solving the abalone age prediction problem using the aba
 
 Once you understand the code structure described below, you can inspect the code and you can start customizing it for your own business case. This is only sample code, and you own this repository for your business use case. Please go ahead, modify the files, commit them and see the changes kick off the SageMaker pipelines in the CICD system.
 
-You can also use the `sagemaker-pipelines-project.ipynb` notebook to experiment from SageMaker Studio before you are ready to checkin your code.
+A `sagemaker-pipelines-project.ipynb` notebook is available upon direct request to Marco to experiment with SageMaker Studio from a local IDE. Notebooks can contain sensitive information in the output and therefore ought not to be pushed to the repository.
 
 A description of some of the artifacts is provided below:
 <br/><br/>

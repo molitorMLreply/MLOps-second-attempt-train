@@ -130,8 +130,8 @@ def get_pipeline(
     model_package_group_name="AbalonePackageGroup",
     pipeline_name="AbalonePipeline",
     base_job_prefix="Abalone",
-    processing_instance_type="ml.m5.xlarge",
-    training_instance_type="ml.m5.xlarge",
+    processing_instance_type="ml.m5.large",
+    training_instance_type="ml.m5.large",
 ):
     """Gets a SageMaker ML Pipeline instance working with on abalone data.
 
@@ -185,34 +185,52 @@ def get_pipeline(
     # training step for generating model artifacts
     model_path = f"s3://{sagemaker_session.default_bucket()}/{base_job_prefix}/AbaloneTrain"
     image_uri = sagemaker.image_uris.retrieve(
-        framework="xgboost",
+        framework="sklearn",
         region=region,
         version="1.0-1",
         py_version="py3",
         instance_type=training_instance_type,
     )
-    xgb_train = Estimator(
-        image_uri=image_uri,
-        instance_type=training_instance_type,
-        instance_count=1,
-        output_path=model_path,
-        base_job_name=f"{base_job_prefix}/abalone-train",
-        sagemaker_session=pipeline_session,
-        role=role,
+
+    # Custom Training job:
+    from sagemaker.sklearn.estimator import SKLearn
+    TRAIN_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    sklearn_estimator = SKLearn(
+        "train.py",
+        source_dir = "pipelines/abalone/train_dependencies",
+        #source_dir = os.path.join(TRAIN_BASE_DIR,"train_dependencies"),
+        role = role,
+        sagemaker_session = pipeline_session,
+        instance_type = "ml.m5.large",
+        framework_version="1.0-1",
+        py_version="py3",
+        base_job_name = "customized-regression-training",
+        hyperparameters = {},
+        dependencies = []
+        )
+
+    from sagemaker.tuner import HyperparameterTuner, IntegerParameter, CategoricalParameter, ContinuousParameter
+
+    hpo = HyperparameterTuner(
+        estimator = sklearn_estimator,
+        objective_metric_name="validation:rmse",
+        hyperparameter_ranges = {
+            "learning-rate": ContinuousParameter(0.001, 0.2),
+            "epochs": IntegerParameter(min_value = 5, max_value = 10),
+            "model-type": CategoricalParameter(["xgboost", "pytorch", "mlp"])
+        },
+        metric_definitions=[
+            {"Name": "validation:rmse", "Regex":"validation:rmse=([0-9\\.]+)"}
+        ],
+        objective_type="Minimize",
+        max_jobs = 3,
+        max_parallel_jobs=3
     )
-    xgb_train.set_hyperparameters(
-        objective="reg:linear",
-        num_round=50,
-        max_depth=5,
-        eta=0.2,
-        gamma=4,
-        min_child_weight=6,
-        subsample=0.7,
-        silent=0,
-    )
-    step_args = xgb_train.fit(
-        inputs={
-            "train": TrainingInput(
+    from sagemaker.workflow.steps import TuningStep
+    step_train = TuningStep(
+        name="HPOTraining",
+        tuner=hpo,
+        inputs={"train": TrainingInput(
                 s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
                     "train"
                 ].S3Output.S3Uri,
@@ -223,13 +241,26 @@ def get_pipeline(
                     "validation"
                 ].S3Output.S3Uri,
                 content_type="text/csv",
-            ),
-        },
+            ),}
     )
-    step_train = TrainingStep(
-        name="TrainAbaloneModel",
-        step_args=step_args,
-    )
+    #step_args_new = sklearn_estimator.fit(inputs={
+    #        "train": TrainingInput(
+    #            s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+    #                "train"
+    #            ].S3Output.S3Uri,
+    #            content_type="text/csv",
+    #        ),
+    #        "validation": TrainingInput(
+    #            s3_data=step_process.properties.ProcessingOutputConfig.Outputs[
+    #                "validation"
+    #            ].S3Output.S3Uri,
+    #            content_type="text/csv",
+    #        ),
+    #    },)
+    #step_train = TrainingStep(
+    #    name="TrainModelWithCustomTrainScript",
+    #    step_args=step_args_new,
+    #)
 
     # processing step for evaluation
     script_eval = ScriptProcessor(
@@ -240,11 +271,13 @@ def get_pipeline(
         base_job_name=f"{base_job_prefix}/script-abalone-eval",
         sagemaker_session=pipeline_session,
         role=role,
+        
     )
     step_args = script_eval.run(
         inputs=[
             ProcessingInput(
-                source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                #source=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+                source=step_train.get_top_model_s3_uri(top_k=0, s3_bucket = default_bucket),
                 destination="/opt/ml/processing/model",
             ),
             ProcessingInput(
@@ -257,9 +290,9 @@ def get_pipeline(
         outputs=[
             ProcessingOutput(output_name="evaluation", source="/opt/ml/processing/evaluation"),
         ],
-        code=os.path.join(BASE_DIR, "evaluate.py"),
+        code=os.path.join(BASE_DIR, "evaluate.py")
     )
-    evaluation_report = PropertyFile(
+    evaluation_report = PropertyFile( # type: ignore
         name="AbaloneEvaluationReport",
         output_name="evaluation",
         path="evaluation.json",
@@ -281,7 +314,8 @@ def get_pipeline(
     )
     model = Model(
         image_uri=image_uri,
-        model_data=step_train.properties.ModelArtifacts.S3ModelArtifacts,
+        model_data=step_train.get_top_model_s3_uri(top_k=0, s3_bucket = default_bucket),
+        #model_data = step_train.properties.ModelArtifacts.S3ModelArtifacts,
         sagemaker_session=pipeline_session,
         role=role,
     )
@@ -306,7 +340,7 @@ def get_pipeline(
             property_file=evaluation_report,
             json_path="regression_metrics.mse.value"
         ),
-        right=6.0,
+        right=150.0,
     )
     step_cond = ConditionStep(
         name="CheckMSEAbaloneEvaluation",
